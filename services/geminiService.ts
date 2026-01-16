@@ -4,7 +4,7 @@ import { PatternAnalysis, ChatMessage } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const modelName = 'gemini-3-flash-preview';
+const modelName = 'gemini-3-flash-preview'; //모델명 임의 변경 금지
 
 export const analyzeChartImage = async (base64Image: string): Promise<PatternAnalysis> => {
   const systemInstruction = `
@@ -50,9 +50,9 @@ export const analyzeChartImage = async (base64Image: string): Promise<PatternAna
           confidence: { type: Type.NUMBER },
           description: { type: Type.STRING },
           trendContext: { type: Type.STRING },
-          candlestickObservations: { 
-            type: Type.ARRAY, 
-            items: { type: Type.STRING } 
+          candlestickObservations: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING }
           },
           overlayPoints: {
             type: Type.ARRAY,
@@ -102,7 +102,7 @@ export const analyzeChartImage = async (base64Image: string): Promise<PatternAna
 
   const text = response.text;
   if (!text) throw new Error("AI로부터 분석 결과를 받지 못했습니다.");
-  
+
   try {
     return JSON.parse(text) as PatternAnalysis;
   } catch (err) {
