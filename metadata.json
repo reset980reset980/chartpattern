@@ -1,0 +1,7 @@
+{
+  "name": "ChartPattern Pro AI",
+  "description": "An advanced AI-powered chart pattern analyzer for stocks and crypto, specializing in classic technical patterns and complex harmonic ratio calculations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
