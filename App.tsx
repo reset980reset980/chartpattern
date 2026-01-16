@@ -5,6 +5,7 @@ import ImageUploader from './components/ImageUploader';
 import PatternResult from './components/PatternResult';
 import AnalysisChat from './components/AnalysisChat';
 import PatternWiki from './components/PatternWiki';
+import AuthModal from './components/AuthModal';
 import { analyzeChartImage } from './services/geminiService';
 import { PatternAnalysis, AnalysisStatus } from './types';
 
@@ -14,6 +15,42 @@ const App: React.FC = () => {
   const [analysisResult, setAnalysisResult] = useState<PatternAnalysis | null>(null);
   const [currentImage, setCurrentImage] = useState<string | null>(null);
   const [isWikiOpen, setIsWikiOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [user, setUser] = useState<any>(null);
+
+  // Check login on mount and handle OAuth callback
+  React.useEffect(() => {
+    const checkUser = async () => {
+      // Handle token in URL from OAuth callback
+      const params = new URLSearchParams(window.location.search);
+      const tokenInUrl = params.get('token');
+      if (tokenInUrl) {
+        // Optionally store token if using JWT, but current backend uses cookies.
+        // Let's assume the backend set the cookie and redirected.
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+        }
+      } catch (err) {
+        console.error('Auth check failed:', err);
+      }
+    };
+    checkUser();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      setUser(null);
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
+  };
 
   const handleAnalysis = useCallback(async (base64: string) => {
     setCurrentImage(base64);
@@ -40,8 +77,13 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col font-sans">
-      <Header onOpenWiki={() => setIsWikiOpen(true)} />
-      
+      <Header
+        onOpenWiki={() => setIsWikiOpen(true)}
+        onOpenAuth={() => setIsAuthOpen(true)}
+        user={user}
+        onLogout={handleLogout}
+      />
+
       <main className="flex-1 max-w-7xl mx-auto px-4 py-12 w-full">
         <div className="max-w-3xl mx-auto text-center mb-12">
           <h2 className="text-4xl md:text-5xl font-black text-white mb-4 tracking-tight leading-tight">
@@ -55,8 +97,13 @@ const App: React.FC = () => {
         <div className="space-y-8">
           {(status === AnalysisStatus.IDLE || status === AnalysisStatus.ERROR) && (
             <div className="max-w-xl mx-auto">
-              <ImageUploader onImageSelected={handleAnalysis} isLoading={status === AnalysisStatus.ANALYZING} />
-              
+              <ImageUploader
+                onImageSelected={handleAnalysis}
+                isLoading={status === AnalysisStatus.ANALYZING}
+                isLoggedIn={!!user}
+                onOpenAuth={() => setIsAuthOpen(true)}
+              />
+
               {status === AnalysisStatus.ERROR && (
                 <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-sm flex items-center gap-3">
                   <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -103,7 +150,7 @@ const App: React.FC = () => {
           {status === AnalysisStatus.SUCCESS && analysisResult && currentImage && (
             <div className="space-y-8 animate-in fade-in duration-700">
               <div className="flex justify-between items-center mb-4">
-                <button 
+                <button
                   onClick={reset}
                   className="group flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-sm font-medium"
                 >
@@ -113,11 +160,11 @@ const App: React.FC = () => {
                   새 차트 분석하기
                 </button>
               </div>
-              
+
               <PatternResult data={analysisResult} image={currentImage} />
-              
+
               <div className="max-w-4xl mx-auto w-full pt-12">
-                 <AnalysisChat image={currentImage} analysis={analysisResult} />
+                <AnalysisChat image={currentImage} analysis={analysisResult} />
               </div>
             </div>
           )}
@@ -125,7 +172,12 @@ const App: React.FC = () => {
       </main>
 
       <PatternWiki isOpen={isWikiOpen} onClose={() => setIsWikiOpen(false)} />
-      
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        onLoginSuccess={(u) => setUser(u)}
+      />
+
       <footer className="border-t border-slate-800 py-8 bg-slate-900/30 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <p className="text-slate-500 text-sm">Gemini 3 Vision 엔진 기반. 교육 및 참고용으로만 사용하십시오.</p>

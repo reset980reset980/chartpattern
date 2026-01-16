@@ -7,6 +7,11 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import dotenv from 'dotenv';
+import axios from 'axios';
+
+dotenv.config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -31,7 +36,10 @@ let db;
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
             password TEXT,
-            name TEXT
+            name TEXT,
+            provider TEXT,
+            oauthId TEXT,
+            profilePicture TEXT
         );
 
         CREATE TABLE IF NOT EXISTS analysis_history (
@@ -48,28 +56,48 @@ let db;
 
 // --- Auth APIs ---
 
-// Register
+// Helper: Find or Create OAuth User
+async function findOrCreateUser(userData) {
+    const { provider, oauthId, email, name, picture } = userData;
+    let user = await db.get('SELECT * FROM users WHERE (provider = ? AND oauthId = ?) OR username = ?', [provider, oauthId, email]);
+
+    if (!user) {
+        const result = await db.run(
+            'INSERT INTO users (username, name, provider, oauthId, profilePicture) VALUES (?, ?, ?, ?, ?)',
+            [email || oauthId, name, provider, oauthId, picture]
+        );
+        user = await db.get('SELECT * FROM users WHERE id = ?', [result.lastID]);
+    } else if (!user.provider) {
+        // Upgrade existing email user to OAuth
+        await db.run(
+            'UPDATE users SET provider = ?, oauthId = ?, profilePicture = ?, name = ? WHERE id = ?',
+            [provider, oauthId, picture, name, user.id]
+        );
+        user = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+    }
+    return user;
+}
+
+// Register (Legacy)
 app.post('/api/auth/register', async (req, res) => {
     const { username, password, name } = req.body;
     if (!username || !password || !name) {
         return res.status(400).json({ error: '모든 필드를 입력해주세요.' });
     }
     try {
-        // Simple plain text password for demo
-        await db.run('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', [username, password, name]);
+        await db.run('INSERT INTO users (username, password, name, provider) VALUES (?, ?, ?, ?)', [username, password, name, 'local']);
         res.json({ success: true });
     } catch (e) {
         res.status(400).json({ error: '이미 존재하는 아이디입니다.' });
     }
 });
 
-// Login
+// Login (Legacy)
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
     const user = await db.get('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
     if (user) {
-        // Login Persistence: 30 Days
-        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
         res.json({ success: true, user: { id: user.id, username: user.username, name: user.name } });
     } else {
         res.status(401).json({ error: '아이디 또는 비밀번호가 잘못되었습니다.' });
@@ -82,23 +110,109 @@ app.post('/api/auth/logout', (req, res) => {
     res.json({ success: true });
 });
 
-// Google Auth (Mock Verification)
-app.post('/api/auth/google', async (req, res) => {
-    const { credential } = req.body;
+// Google OAuth
+app.get('/api/auth/google', (req, res) => {
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&response_type=code&scope=openid%20email%20profile`;
+    res.redirect(url);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
     try {
-        const payload = JSON.parse(Buffer.from(credential.split('.')[1], 'base64').toString());
-        const { email, name, sub: googleId } = payload;
+        const tokenRes = await axios.post('https://oauth2.googleapis.com/token', {
+            code,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+            grant_type: 'authorization_code'
+        });
+        const { access_token } = tokenRes.data;
+        const userRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+        const user = await findOrCreateUser({
+            provider: 'google',
+            oauthId: userRes.data.id,
+            email: userRes.data.email,
+            name: userRes.data.name,
+            picture: userRes.data.picture
+        });
+        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
+        res.redirect(`${process.env.CLIENT_URL}/`);
+    } catch (err) {
+        console.error('Google Callback Error:', err.response?.data || err.message);
+        res.redirect(`${process.env.CLIENT_URL}/?error=auth_failed`);
+    }
+});
 
-        let user = await db.get('SELECT * FROM users WHERE username = ?', [email]);
-        if (!user) {
-            await db.run('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', [email, 'google-auth-' + googleId, name]);
-            user = await db.get('SELECT * FROM users WHERE username = ?', [email]);
-        }
+// Kakao OAuth
+app.get('/api/auth/kakao', (req, res) => {
+    const url = `https://kauth.kakao.com/oauth/authorize?client_id=${process.env.KAKAO_CLIENT_ID}&redirect_uri=${process.env.KAKAO_REDIRECT_URI}&response_type=code`;
+    res.redirect(url);
+});
 
-        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
-        res.json({ success: true, user: { id: user.id, username: user.username, name: user.name } });
-    } catch (e) {
-        res.status(400).json({ error: '인증 처리 실패' });
+app.get('/api/auth/kakao/callback', async (req, res) => {
+    const { code } = req.query;
+    try {
+        const tokenRes = await axios.post('https://kauth.kakao.com/oauth/token', new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: process.env.KAKAO_CLIENT_ID,
+            redirect_uri: process.env.KAKAO_REDIRECT_URI,
+            code
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        const { access_token } = tokenRes.data;
+        const userRes = await axios.get('https://kapi.kakao.com/v2/user/me', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+        const user = await findOrCreateUser({
+            provider: 'kakao',
+            oauthId: userRes.data.id.toString(),
+            email: userRes.data.kakao_account?.email,
+            name: userRes.data.kakao_account?.profile?.nickname || 'Kakao User',
+            picture: userRes.data.kakao_account?.profile?.profile_image_url
+        });
+        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
+        res.redirect(`${process.env.CLIENT_URL}/`);
+    } catch (err) {
+        console.error('Kakao Callback Error:', err.response?.data || err.message);
+        res.redirect(`${process.env.CLIENT_URL}/?error=auth_failed`);
+    }
+});
+
+// Naver OAuth
+app.get('/api/auth/naver', (req, res) => {
+    const state = Math.random().toString(36).substring(7);
+    const url = `https://nid.naver.com/oauth2.0/authorize?client_id=${process.env.NAVER_CLIENT_ID}&redirect_uri=${process.env.NAVER_REDIRECT_URI}&response_type=code&state=${state}`;
+    res.redirect(url);
+});
+
+app.get('/api/auth/naver/callback', async (req, res) => {
+    const { code, state } = req.query;
+    try {
+        const tokenRes = await axios.post('https://nid.naver.com/oauth2.0/token', new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: process.env.NAVER_CLIENT_ID,
+            client_secret: process.env.NAVER_CLIENT_SECRET,
+            code,
+            state
+        }));
+        const { access_token } = tokenRes.data;
+        const userRes = await axios.get('https://openapi.naver.com/v1/nid/me', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+        const userData = userRes.data.response;
+        const user = await findOrCreateUser({
+            provider: 'naver',
+            oauthId: userData.id,
+            email: userData.email,
+            name: userData.name || userData.nickname || 'Naver User',
+            picture: userData.profile_image
+        });
+        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
+        res.redirect(`${process.env.CLIENT_URL}/`);
+    } catch (err) {
+        console.error('Naver Callback Error:', err.response?.data || err.message);
+        res.redirect(`${process.env.CLIENT_URL}/?error=auth_failed`);
     }
 });
 
@@ -106,7 +220,7 @@ app.post('/api/auth/google', async (req, res) => {
 app.get('/api/auth/me', async (req, res) => {
     const userId = req.cookies.userId;
     if (!userId) return res.status(401).json({ user: null });
-    const user = await db.get('SELECT id, username FROM users WHERE id = ?', [userId]);
+    const user = await db.get('SELECT id, username, name, profilePicture FROM users WHERE id = ?', [userId]);
     res.json({ user });
 });
 
