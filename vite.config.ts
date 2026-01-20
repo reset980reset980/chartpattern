@@ -6,8 +6,16 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
       server: {
-        port: 3000,
+        port: 3005,
         host: '0.0.0.0',
+        allowedHosts: ['chartpattern.xsw.kr', 'localhost'],
+        proxy: {
+          '/api': {
+            target: 'http://localhost:3006',
+            changeOrigin: true,
+            secure: false,
+          }
+        }
       },
       plugins: [react()],
       define: {
