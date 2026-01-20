@@ -9,6 +9,9 @@ export default defineConfig(({ mode }) => {
         port: 3005,
         host: '0.0.0.0',
         allowedHosts: ['chartpattern.xsw.kr', 'localhost'],
+        fs: {
+          allow: ['.', '../'],
+        },
         proxy: {
           '/api': {
             target: 'http://localhost:3006',
