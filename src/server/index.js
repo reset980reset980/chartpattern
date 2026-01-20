@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 
 import dotenv from 'dotenv';
 import axios from 'axios';
+import bcrypt from 'bcrypt';
 
 dotenv.config();
 
@@ -85,7 +86,9 @@ app.post('/api/auth/register', async (req, res) => {
         return res.status(400).json({ error: '모든 필드를 입력해주세요.' });
     }
     try {
-        await db.run('INSERT INTO users (username, password, name, provider) VALUES (?, ?, ?, ?)', [username, password, name, 'local']);
+        // Hash password before storing
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await db.run('INSERT INTO users (username, password, name, provider) VALUES (?, ?, ?, ?)', [username, hashedPassword, name, 'local']);
         res.json({ success: true });
     } catch (e) {
         res.status(400).json({ error: '이미 존재하는 아이디입니다.' });
@@ -95,10 +98,17 @@ app.post('/api/auth/register', async (req, res) => {
 // Login (Legacy)
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
-    const user = await db.get('SELECT * FROM users WHERE username = ? AND password = ?', [username, password]);
-    if (user) {
-        res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
-        res.json({ success: true, user: { id: user.id, username: user.username, name: user.name } });
+    const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
+
+    if (user && user.password) {
+        // Compare hashed password
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (isPasswordValid) {
+            res.cookie('userId', user.id, { httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000, secure: true, sameSite: 'none' });
+            res.json({ success: true, user: { id: user.id, username: user.username, name: user.name } });
+        } else {
+            res.status(401).json({ error: '아이디 또는 비밀번호가 잘못되었습니다.' });
+        }
     } else {
         res.status(401).json({ error: '아이디 또는 비밀번호가 잘못되었습니다.' });
     }
